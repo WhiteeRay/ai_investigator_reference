@@ -1,0 +1,25 @@
+package org.di.ai_investigator_report.dto.notification;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ReportResultMessage {
+    private Long fileId;
+    private String caseNumber;
+    private String fileName;
+    private String userEmail;
+    private ReportProcessingStatus status;
+    private String reportFileUrl;
+    private String reportTxt;
+    private String errorMessage;
+    private LocalDateTime timestamp;
+    private long processingDurationSeconds;
+}
