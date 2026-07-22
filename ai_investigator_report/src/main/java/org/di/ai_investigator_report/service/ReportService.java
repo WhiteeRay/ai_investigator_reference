@@ -28,6 +28,7 @@ public class ReportService {
     private final RabbitTemplate rabbitTemplate;
     private final WebClient.Builder webClient;
     private final MinioService minioService;
+    private final LogService logService;
 
     @Value("${ai.model.url}")
     private String aiModelUrl;
@@ -73,6 +74,8 @@ public class ReportService {
 
             String storedFileName = UUID.randomUUID() + "_" + fileName.replace(".pdf", ".docx");
             String reportFileUrl = minioService.uploadReportFile(docxBytes, caseNumber, storedFileName);
+
+            logService.saveFileContent(docxBytes, storedFileName);
 
             long duration = (System.currentTimeMillis() - startTime) / 1000;
             log.info("Report processing completed for case {} after {}s", caseNumber, duration);
