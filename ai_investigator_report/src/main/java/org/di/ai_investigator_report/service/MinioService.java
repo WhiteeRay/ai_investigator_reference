@@ -34,13 +34,10 @@ public class MinioService {
         }
     }
 
-    private String extractObjectNameFromUrl(String fileUrl) {
-        return fileUrl.substring(fileUrl.indexOf(bucketName) + bucketName.length() + 1);
-    }
-
     public InputStream downloadFile(String fileUrl) {
         try {
-            String objectName = extractObjectNameFromUrl(fileUrl);
+            // fileUrl приходит из очереди уже как имя объекта в бакете (плоское хранение, без вложенных папок)
+            String objectName = fileUrl;
             log.info("Downloading file: bucket={}, object={}", bucketName, objectName);
             return minioClient.getObject(
                     GetObjectArgs.builder()

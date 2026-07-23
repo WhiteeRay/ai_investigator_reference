@@ -61,6 +61,7 @@ public class ReportService {
             body.add("case_number", new HttpEntity<>(caseNumber));
             body.add("user_id", new HttpEntity<>(String.valueOf(originalMessage.getUserId())));
 
+           
             byte[] docxBytes = webClient.build().post()
                     .uri(aiModelUrl + ":" + reportModelPort + "/api/report")
                     .contentType(MediaType.MULTIPART_FORM_DATA)
