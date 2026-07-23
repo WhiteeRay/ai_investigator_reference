@@ -10,9 +10,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ReportProcessingMessage {
-    private Long fileId;
-    private String fileUrl;
-    private String originalFileName;
     private String caseNumber;
     private String userEmail;
     private Long userId;

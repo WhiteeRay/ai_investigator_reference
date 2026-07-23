@@ -12,13 +12,11 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ReportResultMessage {
-    private Long fileId;
     private String caseNumber;
     private String fileName;
     private String userEmail;
     private ReportProcessingStatus status;
     private String reportFileUrl;
-    private String reportTxt;
     private String errorMessage;
     private LocalDateTime timestamp;
     private long processingDurationSeconds;

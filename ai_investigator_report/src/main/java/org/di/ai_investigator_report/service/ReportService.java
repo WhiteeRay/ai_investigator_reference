@@ -5,19 +5,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.di.ai_investigator_report.dto.notification.ReportProcessingMessage;
 import org.di.ai_investigator_report.dto.notification.ReportProcessingStatus;
 import org.di.ai_investigator_report.dto.notification.ReportResultMessage;
-import org.di.ai_investigator_report.dto.request.ReportGenerateRequest;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
@@ -28,7 +23,7 @@ public class ReportService {
     private final RabbitTemplate rabbitTemplate;
     private final WebClient.Builder webClient;
     private final MinioService minioService;
-    private final LogService logService;
+    //убрал LogService
 
     @Value("${ai.model.url}")
     private String aiModelUrl;
@@ -42,73 +37,69 @@ public class ReportService {
     @Value("${spring.rabbitmq.report.result.routing-key}")
     private String RESULT_ROUTING_KEY;
 
-    public void processFile(byte[] fileBytes, String fileName,
-                            String caseNumber, ReportProcessingMessage originalMessage) {
+    public void processReport(ReportProcessingMessage msg) {
         long startTime = System.currentTimeMillis();
-        notifyProcessing(originalMessage);
+        String caseNumber = msg.getCaseNumber();
+
+        notifyProcessing(msg);
 
         try {
-            log.info("Report step 1: uploading file {} to AI model for case {}", fileName, caseNumber);
+            if (caseNumber == null || caseNumber.isBlank()) {
+                throw new IllegalStateException("caseNumber is null or blank");
+            }
 
-            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-            ByteArrayResource resource = new ByteArrayResource(fileBytes) {
-                @Override
-                public String getFilename() { return fileName; }
-            };
-            HttpHeaders fileHeaders = new HttpHeaders();
-            fileHeaders.setContentType(MediaType.APPLICATION_PDF);
-            body.add("file", new HttpEntity<>(resource, fileHeaders));
-            body.add("case_number", new HttpEntity<>(caseNumber));
-            body.add("user_id", new HttpEntity<>(String.valueOf(originalMessage.getUserId())));
+            log.info("Report step 1: requesting report from AI model for case {}", caseNumber);
 
             byte[] docxBytes = webClient.build().post()
                     .uri(aiModelUrl + ":" + reportModelPort + "/api/report")
-                    .contentType(MediaType.MULTIPART_FORM_DATA)
-                    .bodyValue(body)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(Map.of(
+                            "rag_id", caseNumber,
+                            "user_id", msg.getUserId()))
                     .retrieve()
                     .bodyToMono(byte[].class)
                     .block();
 
-            log.info("Report step 2: received docx file ({} bytes) for case {}",
-                    docxBytes != null ? docxBytes.length : 0, caseNumber);
+            if (docxBytes == null || docxBytes.length == 0) {
+                throw new IllegalStateException("Пустой ответ от AI-сервиса для дела " + caseNumber);
+            }
 
-            String storedFileName = UUID.randomUUID() + "_" + fileName.replace(".pdf", ".docx");
+            log.info("Report step 2: received docx ({} bytes) for case {}", docxBytes.length, caseNumber);
+
+            String storedFileName = UUID.randomUUID() + "_report.docx";
             String reportFileUrl = minioService.uploadReportFile(docxBytes, caseNumber, storedFileName);
 
-            logService.saveFileContent(docxBytes, storedFileName);
-
             long duration = (System.currentTimeMillis() - startTime) / 1000;
-            log.info("Report processing completed for case {} after {}s", caseNumber, duration);
+            log.info("Report processing completed for case {} after {}s, stored as {}",
+                    caseNumber, duration, storedFileName);
 
-            notifyCompletion(originalMessage, reportFileUrl, duration);
+            notifyCompletion(msg, reportFileUrl, storedFileName, duration);
 
         } catch (Exception e) {
             long duration = (System.currentTimeMillis() - startTime) / 1000;
-            log.error("Report processing failed for file {} in case {} after {}s: {}",
-                    fileName, caseNumber, duration, e.getMessage());
-            notifyFailure(originalMessage, e.getMessage(), duration);
+            log.error("Report processing failed for case {} after {}s: {}",
+                    caseNumber, duration, e.getMessage(), e);
+            notifyFailure(msg, e.getMessage(), duration);
         }
     }
 
     public void notifyProcessing(ReportProcessingMessage msg) {
         sendNotification(ReportResultMessage.builder()
-                .fileId(msg.getFileId())
                 .caseNumber(msg.getCaseNumber())
-                .fileName(msg.getOriginalFileName())
                 .userEmail(msg.getUserEmail())
                 .status(ReportProcessingStatus.PROCESSING)
                 .timestamp(LocalDateTime.now())
                 .build());
     }
 
-    public void notifyCompletion(ReportProcessingMessage msg, String reportFileUrl, long duration) {
+    public void notifyCompletion(ReportProcessingMessage msg, String reportFileUrl,
+                                 String fileName, long duration) {
         sendNotification(ReportResultMessage.builder()
-                .fileId(msg.getFileId())
                 .caseNumber(msg.getCaseNumber())
-                .fileName(msg.getOriginalFileName())
                 .userEmail(msg.getUserEmail())
                 .status(ReportProcessingStatus.COMPLETED)
                 .reportFileUrl(reportFileUrl)
+                .fileName(fileName)
                 .timestamp(LocalDateTime.now())
                 .processingDurationSeconds(duration)
                 .build());
@@ -116,9 +107,7 @@ public class ReportService {
 
     public void notifyFailure(ReportProcessingMessage msg, String errorMessage, long duration) {
         sendNotification(ReportResultMessage.builder()
-                .fileId(msg.getFileId())
                 .caseNumber(msg.getCaseNumber())
-                .fileName(msg.getOriginalFileName())
                 .userEmail(msg.getUserEmail())
                 .status(ReportProcessingStatus.FAILED)
                 .errorMessage(errorMessage)
@@ -133,15 +122,19 @@ public class ReportService {
         while (retryCount < maxRetries) {
             try {
                 rabbitTemplate.convertAndSend(RESULT_EXCHANGE, RESULT_ROUTING_KEY, message);
-                log.debug("Sent {} notification for file {} in case {}",
-                        message.getStatus(), message.getFileId(), message.getCaseNumber());
+                log.debug("Sent {} notification for case {}",
+                        message.getStatus(), message.getCaseNumber());
                 return;
             } catch (Exception e) {
                 retryCount++;
-                log.error("Failed to send notification (attempt {}/{}): {}", retryCount, maxRetries, e.getMessage());
+                log.error("Failed to send notification (attempt {}/{}): {}",
+                        retryCount, maxRetries, e.getMessage());
                 if (retryCount < maxRetries) {
-                    try { Thread.sleep(1000L * retryCount); } catch (InterruptedException ie) {
+                    try {
+                        Thread.sleep(1000L * retryCount);
+                    } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
+                        return;
                     }
                 }
             }
